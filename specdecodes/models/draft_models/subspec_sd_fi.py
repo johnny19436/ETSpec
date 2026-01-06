@@ -60,17 +60,34 @@ class SubSpecSDDraftModel(ClassicSDDraftModel):
                 seq_len = self.kv_len + num_tokens,
                 attention_mask=tree_attention_mask,
             )
+            if hasattr(self, "graph"):
+                sampled_probs = self.tree_step(
+                    token_ids,
+                    position_ids,
+                    cache_position,
+                    tree_attention_mask
+                )
+            else:
+                sampled_probs = self(
+                    token_ids,
+                    with_softmax=True,
+                    past_key_values=self.past_key_values.cache,
+                    position_ids=position_ids,
+                    cache_position=cache_position,
+                    mode='tree', 
+                    flashinferWrapper = self.flashinferWrapper,
+                )
 
-            sampled_probs = self(
-                token_ids,
-                with_softmax=True,
-                past_key_values=self.past_key_values.cache,
-                position_ids=position_ids,
-                cache_position=cache_position,
+            # sampled_probs = self(
+            #     token_ids,
+            #     with_softmax=True,
+            #     past_key_values=self.past_key_values.cache,
+            #     position_ids=position_ids,
+            #     cache_position=cache_position,
 
-                mode='tree', 
-                flashinferWrapper = self.flashinferWrapper,
-            )
+            #     mode='tree', 
+            #     flashinferWrapper = self.flashinferWrapper,
+            # )
         
         with nvtx.annotate("sample nodes", color="green"):
             token_ids, child_probs, parent_indices = self.topk_sampling(
@@ -201,3 +218,95 @@ class SubSpecSDDraftModel(ClassicSDDraftModel):
         # Update the tree data and mask cache before returning
         self.update_tree(self.tree_data)
         return self.tree
+    
+def init_cuda_graph_runner(self, device: torch.device):
+        """
+        Allocate fixed-size staging buffers for the 'tree' forward pass 
+        and capture it inside a CUDA Graph.
+        """
+        if hasattr(self, "graph"):
+            return
+
+        print("Initializing CUDA Graph runner for SubSpecSDDraftModel...")
+        self.decode_chunk_size = self.draft_params.topk_len
+        self.model.eval()
+
+        # ── Staging Buffers ───────────────────────────────────────
+        B = 1
+        L = self.decode_chunk_size
+        dtype = self.model.lm_head.weight.dtype
+
+        # Inputs for forward()
+        self.input_ids_buf      = torch.zeros((B, L), dtype=torch.long, device=device)
+        self.position_ids_buf   = torch.zeros((B, L), dtype=torch.long, device=device)
+        self.cache_position_buf = torch.zeros((L,),    dtype=torch.long, device=device)
+        
+        # We also need to capture the attention mask used by FlashInfer
+        # Note: FlashInfer attention mask shape depends on your implementation, 
+        # usually [L, L] for tree structures.
+        self.tree_mask_buf = torch.zeros((L, L), dtype=dtype, device=device)
+
+        # ── Warm-up & Capture ─────────────────────────────────────
+        stream = torch.cuda.Stream(device=device)
+        stream.wait_stream(torch.cuda.current_stream())
+
+        with torch.cuda.stream(stream):
+            # Warm-up (2 iterations)
+            for _ in range(2):
+                # We assume self.flashinferWrapper is already initialized
+                self.flashinferWrapper.prepareAttention(
+                    'tree',
+                    num_tokens=L,
+                    seq_len=128, # Dummy sequence length for warmup
+                    attention_mask=self.tree_mask_buf,
+                )
+                _ = self(
+                    self.input_ids_buf,
+                    with_softmax=True,
+                    past_key_values=self.past_key_values.cache,
+                    position_ids=self.position_ids_buf,
+                    cache_position=self.cache_position_buf,
+                    mode='tree',
+                    flashinferWrapper=self.flashinferWrapper,
+                )
+
+            torch.cuda.current_stream().wait_stream(stream)
+            cg = torch.cuda.CUDAGraph()
+            
+            with torch.cuda.graph(cg, stream=stream):
+                self.output_buffer = self(
+                    self.input_ids_buf,
+                    with_softmax=True,
+                    past_key_values=self.past_key_values.cache,
+                    position_ids=self.position_ids_buf,
+                    cache_position=self.cache_position_buf,
+                    mode='tree',
+                    flashinferWrapper=self.flashinferWrapper,
+                )
+
+        self.graph = cg
+        print("Finished capturing draft model CUDA graph.")
+
+def tree_step(
+        self,
+        token_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        cache_position: torch.Tensor,
+        tree_attention_mask: torch.Tensor,
+    ):
+        """
+        Copy fresh data into staging buffers and replay the CUDA graph.
+        """
+        # 1. Update Buffers
+        self.input_ids_buf.copy_(token_ids)
+        self.position_ids_buf.copy_(position_ids)
+        self.cache_position_buf.copy_(cache_position)
+        
+        if tree_attention_mask is not None:
+            # Ensure the mask is copied into the buffer used during capture
+            self.tree_mask_buf.copy_(tree_attention_mask)
+
+        # 2. Replay
+        self.graph.replay()
+        
+        return self.output_buffer
