@@ -14,6 +14,8 @@ class ClassicSDGeneratorBase(GeneratorBase):
         super().__init__(*model_args, **kwargs)
         self.generator_kwargs = generator_kwargs or {}
         self.prefill_chunk_size = self.generator_kwargs.get("prefill_chunk_size", None)
+        self._current_context_ids = None
+        self._accept_count = 0  # Track continuous accepted tokens before rejection
         
     def _speculate(self, input_ids):
         return self.draft_model.speculate(input_ids)
@@ -79,8 +81,44 @@ class ClassicSDGeneratorBase(GeneratorBase):
     def _verify_step(self, p, token_ids, logits_processor, do_sample):
         sampled_token_id = p.argmax() if not do_sample else p.multinomial(1).squeeze(-1)
         if torch.any(sampled_token_id == token_ids):
+            # Token accepted - increment counter
+            self._accept_count += 1
             return sampled_token_id, None
         else:
+            # Simple terminal logging to inspect where speculative paths are rejected.
+            sampled_word = self.tokenizer.decode([int(sampled_token_id)], skip_special_tokens=False)
+            candidate_words = self.tokenizer.decode(token_ids.tolist(), skip_special_tokens=False)
+
+            # Top-5 target model candidates (token + prob)
+            topk_vals, topk_ids = torch.topk(p, k=min(5, p.shape[-1]))
+            topk_ids_list = topk_ids.tolist()
+            topk_probs_list = topk_vals.tolist()
+            topk_words = [
+                self.tokenizer.decode([int(tok_id)], skip_special_tokens=False)
+                for tok_id in topk_ids_list
+            ]
+
+            # Context is the prefix *before* adding target/draft tokens.
+            ctx_ids = getattr(self, "_current_context_ids", None)
+            prefix_text = ""
+            if isinstance(ctx_ids, list) and len(ctx_ids) > 0:
+                prefix_text = self.tokenizer.decode(ctx_ids, skip_special_tokens=False)
+                # Show only the tail of the prefix to keep it short (reduced from 150 to 80)
+                if len(prefix_text) > 80:
+                    prefix_text = "..." + prefix_text[-80:]
+
+            print(
+                f"[ClassicSD] Draft rejection: accepted={self._accept_count} tokens before rejection | "
+                f"target='{sampled_word}' (id={int(sampled_token_id)}), "
+                f"draft_candidates='{candidate_words}' (ids={token_ids.tolist()})"
+            )
+            print(
+                f"    target_top5_ids   : {topk_ids_list}\n"
+                f"    target_top5_probs : {topk_probs_list}\n"
+                f"    target_top5_tokens: {topk_words}"
+            )
+            if prefix_text:
+                print(f"    context: {prefix_text}")
             return None, sampled_token_id
         
     def _verify(self, tree, root_ind ,logits, logits_processor, do_sample,skip_nodes=0):
@@ -201,12 +239,20 @@ class ClassicSDGeneratorBase(GeneratorBase):
 
                 # * verify
                 with nvtx.annotate("verify"):
+                    # Store current context for rejection logging (keep it during entire verification)
+                    if input_ids.shape[1] > 0:
+                        self._current_context_ids = input_ids[0].cpu().tolist()
+                    else:
+                        self._current_context_ids = []
+                    # Reset accept count for this verification round
+                    self._accept_count = 0
                     root_ind = 0
                     sampled_tokens, hidden_indices, (total_len, accept_len) = self._verify(
                                                         tree, root_ind, next_token_logits, 
                                                         logits_processor,
                                                         do_sample
                                                     )
+                    self._current_context_ids = None  # Clear after verification
                     
                     sampled_tokens = sampled_tokens.to(input_ids.device)
                     del next_token_logits

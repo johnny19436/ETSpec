@@ -101,12 +101,20 @@ class SubSpecSDGeneratorBase(ClassicSDGeneratorBase):
 
                 # * verify
                 with nvtx.annotate("verify"):
+                    # Store current context for rejection logging
+                    if input_ids.shape[1] > 0:
+                        self._current_context_ids = input_ids[0].cpu().tolist()
+                    else:
+                        self._current_context_ids = []
+                    # Reset accept count for this verification round
+                    self._accept_count = 0
                     root_ind = 0
                     sampled_tokens, hidden_indices, (total_len, accept_len) = self._verify(
                                                             tree, root_ind, next_token_logits, 
                                                             logits_processor,
                                                             do_sample
                                                         )
+                    self._current_context_ids = None  # Clear after verification
                     sampled_tokens = sampled_tokens.to(input_ids.device)
                     del next_token_logits
                     
