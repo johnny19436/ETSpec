@@ -194,7 +194,7 @@ def run_math_eval(generator, tokenizer, past_key_values, draft_past_key_values, 
         draft_past_key_values: draft past key values for speculative decoding (optional)
         args: namespace containing temperature, max_length, do_sample, warmup_iter
         dataset: list of dicts, each with keys:
-            "question": the prompt string
+            "query": the query string
             "answer": full original answer text from GSM8K (with reasoning and final line "Answer: N")
         log_dir: directory path for writing per-sample JSONL logs
 
@@ -230,14 +230,13 @@ def run_math_eval(generator, tokenizer, past_key_values, draft_past_key_values, 
     total_q = 0
     correct_q = 0
     
-    for idx, entry in tqdm(enumerate(dataset), total=len(dataset), desc=f"Evaluating {bench_name}"):
-        prompt = entry["question"]
-        ground_truth_text = entry["answer"]  # includes "Answer: N"
+    for idx, sample in tqdm(enumerate(dataset), total=len(dataset), desc=f"Evaluating {bench_name}"):
+        query = sample["query"]
 
         # 2.1 Generate model output IDs (same as original)
         tokenizer.use_default_system_prompt = True
         input_ids = tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
+            [{"role": "user", "content": query}],
             tokenize=True, add_generation_prompt=True, return_tensors="pt", enable_thinking=enable_thinking
         ).to("cuda:0" if generator.device == "auto" else generator.device)
 
@@ -257,12 +256,12 @@ def run_math_eval(generator, tokenizer, past_key_values, draft_past_key_values, 
         ).strip()
         
         pred = extract_answer(output_str, bench_name)  # to ensure it runs without error
-        gt_cot, gt_ans = parse_ground_truth(entry, bench_name)  # to ensure it runs without error
+        gt_cot, gt_ans = parse_ground_truth(sample, bench_name)  # to ensure it runs without error
         
         # 2.3 Extract original performance logs
         record = {**wandb_logger.log_data}
         record.update({
-            "query": prompt,
+            "query": query,
             "response": output_str,
             "prediction": pred,
             "answer": gt_ans,
@@ -281,7 +280,7 @@ def run_math_eval(generator, tokenizer, past_key_values, draft_past_key_values, 
         # Append metrics lists
         _accum_perf(perf, record)
 
-        # Write JSONL entry
+        # Write JSONL sample
         with open(log_file, "a+") as f:
             json.dump(record, f)
             f.write("\n")
@@ -313,7 +312,7 @@ def run_code_eval(generator, tokenizer, past_key_values, draft_past_key_values, 
         draft_past_key_values: draft past key values for speculative decoding (optional)
         args: namespace containing temperature, max_length, do_sample, warmup_iter
         dataset: list of dicts, each with keys:
-            "prompt": the code generation prompt string
+            "query": the code generation query string
             "test_cases": a list of dicts with "input" and "output" fields for testing correctness
         log_dir: directory path for writing per-sample JSONL logs
 
@@ -348,15 +347,13 @@ def run_code_eval(generator, tokenizer, past_key_values, draft_past_key_values, 
     total_q = 0
     correct_q = 0
     
-    for idx, entry in tqdm(enumerate(dataset), total=len(dataset), desc=f"Evaluating {bench_name}"):
-        prompt = entry["prompt"]
-        solution_str = entry["solution"]  # function code in string
-        testcase_str = entry["testcase"]
+    for idx, sample in tqdm(enumerate(dataset), total=len(dataset), desc=f"Evaluating {bench_name}"):
+        query, testcase_str, entry_point = sample["query"], sample["testcase"], sample["entry_point"]
 
         # 2.1 Generate model output IDs (same as original)
         tokenizer.use_default_system_prompt = True
         input_ids = tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
+            [{"role": "user", "content": query}],
             tokenize=True, add_generation_prompt=True, return_tensors="pt", enable_thinking=enable_thinking
         ).to("cuda:0" if generator.device == "auto" else generator.device)
 
@@ -378,7 +375,7 @@ def run_code_eval(generator, tokenizer, past_key_values, draft_past_key_values, 
         # 2.3 Extract original performance logs
         record = {**wandb_logger.log_data}
         record.update({
-            "query": prompt,
+            "query": query,
             "response": output_str,
             "peak_memory": torch.cuda.max_memory_reserved(generator.device) / (1024 ** 3)
         })
@@ -395,7 +392,7 @@ def run_code_eval(generator, tokenizer, past_key_values, draft_past_key_values, 
         # Append metrics lists
         _accum_perf(perf, record)
 
-        # Write JSONL entry
+        # Write JSONL sample
         with open(log_file, "a+") as f:
             json.dump(record, f)
             f.write("\n")
@@ -444,8 +441,8 @@ def run_mmlu_pro_eval(generator, tokenizer,
     perf = _init_perf()
     total_q, correct_q = 0, 0
 
-    for idx, entry in tqdm(enumerate(dataset), total=len(dataset), desc="Eval MMLU‑Pro"):
-        prompt, gt = entry["question"], entry["answer"]
+    for idx, sample in tqdm(enumerate(dataset), total=len(dataset), desc="Eval MMLU‑Pro"):
+        prompt, gt = sample["question"], sample["answer"]
         tokenizer.use_default_system_prompt = True
         input_ids = tokenizer.apply_chat_template(
             [{"role":"user","content":prompt}],
@@ -711,10 +708,10 @@ def run_longbench_eval(generator, tokenizer, past_key_values, draft_past_key_val
     total_q = 0
     correct_q = 0
 
-    for _, entry in tqdm(enumerate(dataset), total=len(dataset), desc=f"Evaluating {bench_name}"):
-        prompt = entry["question"]
-        ground_truth_list = entry["answer"]
-        all_classes = entry.get("classes", None)
+    for _, sample in tqdm(enumerate(dataset), total=len(dataset), desc=f"Evaluating {bench_name}"):
+        prompt = sample["question"]
+        ground_truth_list = sample["answer"]
+        all_classes = sample.get("classes", None)
 
         tokenizer.use_default_system_prompt = True
         input_ids = tokenizer.apply_chat_template(
