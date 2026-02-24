@@ -96,7 +96,7 @@ def get_loader(bench_name: str, with_answers: bool = False) -> Callable:
     
     try:
         import importlib
-        module = importlib.import_module(module_name, package="run.pipelines.benchmarks")
+        module = importlib.import_module(module_name, package="run.pipelines.benchmarks.loader")
         return getattr(module, dataset_loader)
     except ImportError as e:
         raise ImportError(_import_error_message(bench_name)) from e

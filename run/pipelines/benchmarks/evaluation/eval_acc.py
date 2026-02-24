@@ -13,7 +13,6 @@ import torch
 import gc
 from tqdm import tqdm
 from torch.nn.attention import SDPBackend, sdpa_kernel
-import evaluate as hf_evaluate
 import logging
 
 from .utils import (
@@ -30,8 +29,8 @@ from .utils import (
 from specdecodes.models.utils.wandb_logger import wandb_logger
 from run.pipelines.utils.eval_utils import reset_kv, maybe_init_cuda_graph_runner
 
-from ..math_eval.parser import extract_answer, parse_ground_truth
-from ..math_eval.grader import math_equal
+from .math_eval import extract_answer, parse_ground_truth, math_equal
+from .code_eval import extract_code, build_test_code, run_single_test
 
 dataset2metric = {
     "narrativeqa": qa_f1_score,
@@ -258,6 +257,11 @@ def run_math_eval(generator, tokenizer, past_key_values, draft_past_key_values, 
         pred = extract_answer(output_str, bench_name)  # to ensure it runs without error
         gt_cot, gt_ans = parse_ground_truth(sample, bench_name)  # to ensure it runs without error
         
+        is_correct = (pred is not None and gt_ans is not None and math_equal(pred, gt_ans))
+        total_q += 1
+        if is_correct:
+            correct_q += 1
+        
         # 2.3 Extract original performance logs
         record = {**wandb_logger.log_data}
         record.update({
@@ -268,12 +272,6 @@ def run_math_eval(generator, tokenizer, past_key_values, draft_past_key_values, 
             "peak_memory": torch.cuda.max_memory_reserved(generator.device) / (1024 ** 3)
         })
         
-
-        is_correct = (pred is not None and gt_ans is not None and math_equal(pred, gt_ans))
-        total_q += 1
-        if is_correct:
-            correct_q += 1
-
         # Include per-sample Accuracy flag in JSON record
         record["Accuracy"] = int(is_correct)
 
@@ -372,6 +370,14 @@ def run_code_eval(generator, tokenizer, past_key_values, draft_past_key_values, 
             output_ids[0][input_ids.shape[1]:], skip_special_tokens=True
         ).strip()
         
+        gen_code = extract_code(output_str)
+        test_code = build_test_code(gen_code, testcase_str, entry_point, bench_name)
+        
+        is_correct = run_single_test(test_code)
+        total_q += 1
+        if is_correct:
+            correct_q += 1
+
         # 2.3 Extract original performance logs
         record = {**wandb_logger.log_data}
         record.update({
@@ -379,15 +385,9 @@ def run_code_eval(generator, tokenizer, past_key_values, draft_past_key_values, 
             "response": output_str,
             "peak_memory": torch.cuda.max_memory_reserved(generator.device) / (1024 ** 3)
         })
-        
-
-        # is_correct = (pred is not None and gt_ans is not None and math_equal(pred, gt_ans))
-        # total_q += 1
-        # if is_correct:
-        #     correct_q += 1
 
         # Include per-sample Accuracy flag in JSON record
-        # record["Accuracy"] = int(is_correct)
+        record["Accuracy"] = int(is_correct)
 
         # Append metrics lists
         _accum_perf(perf, record)

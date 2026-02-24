@@ -6,7 +6,7 @@ Write a solution to the following problem and make sure that it passes the tests
 ```python
 {Prompt}
 ```
-Here is the completed function:
+Put the solution in a ```python ... ``` block in your response.
 """.strip()
 
 LLAMA_QUERY_TEMPLATE = r"""
@@ -14,7 +14,7 @@ Write a solution to the following problem and make sure that it passes the tests
 ```python
 {Prompt}
 ```
-Here is the completed function:
+Put the solution in a ```python ... ``` block in your response.
 """.strip()
 
 # HUMANEVAL
