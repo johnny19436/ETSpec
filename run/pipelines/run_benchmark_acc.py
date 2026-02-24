@@ -12,8 +12,8 @@ from .benchmarks.utils.eval_acc import run_gsm8k_eval, run_aime_eval, run_liveco
 from .utils.benchmark_utils import reset_seeds, cleanup_gpu, setup_benchmark_dir
 
 BENCHMARK_EVALUATORS = {
-    "gsm8k": run_gsm8k_eval,
-    "aime": run_aime_eval,
+    "gsm8k": run_math_eval,
+    "aime": run_math_eval,
     "livecodebench": run_livecodebench_eval,
     "mmlu_pro": run_mmlu_pro_eval,
     "narrativeqa": run_longbench_eval,
@@ -34,7 +34,7 @@ BENCHMARK_EVALUATORS = {
     "repobench_p": run_longbench_eval,
 }
 
-def main(builder, benchmarks=None, max_samples=None):
+def main(builder, benchmarks=None, max_samples=None, query_version="llama"):
     """Run accuracy benchmarks on specified datasets."""
     reset_seeds(0)
     logging.basicConfig(level=os.environ.get("LOGLEVEL", "INFO").upper())
@@ -62,14 +62,14 @@ def main(builder, benchmarks=None, max_samples=None):
         log_dir = setup_benchmark_dir(log_dir_base, bench_name, getattr(args, "settings_snapshot", None))
         print(f"Log directory: {log_dir}")
         
-        dataset = load_dataset(bench_name, max_samples=max_samples, seed=0, shuffle=True, with_answers=True)
+        dataset = load_dataset(bench_name, max_samples=max_samples, seed=0, shuffle=True, with_answers=True, query_version="llama")
         print(f"Running benchmark: {bench_name}, samples: {len(dataset)}")
         
         cleanup_gpu()
     
         # Evaluate
         eval_start = time.perf_counter()
-        if BENCHMARK_EVALUATORS[bench_name] == run_longbench_eval:
+        if BENCHMARK_EVALUATORS[bench_name] == run_longbench_eval or BENCHMARK_EVALUATORS[bench_name] == run_math_eval:
             metrics_json = BENCHMARK_EVALUATORS[bench_name](generator, tokenizer, past_kv, draft_past_kv, args, dataset, log_dir, bench_name)
         else:
             metrics_json = BENCHMARK_EVALUATORS[bench_name](generator, tokenizer, past_kv, draft_past_kv, args, dataset, log_dir)
