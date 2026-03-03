@@ -4,11 +4,23 @@ import os
 import tempfile
 
 def extract_code(text: str) -> str:
-    """Extracts code from a ```python ... ``` block."""
+    #Extracts code from a ```python ... ``` block.
     match = re.search(r"```(?:python)?\n(.*?)\n```", text, re.S)
     if match:
         return match.group(1).strip()
-    return text.strip()
+    
+    # Pattern to match ```...``` blocks
+    pattern = r"```(?:\w+)?\n?(.*?)\n?```"
+    # (+ ```) as we add the opening "```python" to the gen_prefix
+    matches = re.findall(pattern, r"```" + text, re.DOTALL)
+    # if no matches, try to match ```...``` blocks (after removing the language)
+    if not matches:
+        text_without_lang = re.sub(r"```python", "```", text)
+        matches = re.findall(pattern, text_without_lang, re.DOTALL)
+    if not matches:
+        return ""
+    else:
+        return matches[0]
 
 def build_test_code(code_str: str, testcase_str: str, entry_point: str = None, bench_name: str = "humaneval") -> str:
     """Builds a complete code string that includes the solution and test cases."""
@@ -37,12 +49,12 @@ def run_single_test(code_str: str, timeout: float = 2.0) -> bool:
             )
             # If returncode is 0 and no assertion errors, tests passed
             if proc.returncode == 0:
-                return True
+                return True, None
             else:
                 # Check if it's an assertion error
                 # if "AssertionError" in proc.stderr or "assert" in proc.stderr.lower():
                 #     return False
                 # Other runtime errors also count as failure
-                return False
-        except (subprocess.TimeoutExpired, Exception):
-            return False
+                return False, proc.stderr
+        except (subprocess.TimeoutExpired, Exception) as e:
+            return False, str(e)

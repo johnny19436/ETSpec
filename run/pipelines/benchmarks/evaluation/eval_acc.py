@@ -373,7 +373,7 @@ def run_code_eval(generator, tokenizer, past_key_values, draft_past_key_values, 
         gen_code = extract_code(output_str)
         test_code = build_test_code(gen_code, testcase_str, entry_point, bench_name)
         
-        is_correct = run_single_test(test_code)
+        is_correct, status = run_single_test(test_code)
         total_q += 1
         if is_correct:
             correct_q += 1
@@ -383,6 +383,8 @@ def run_code_eval(generator, tokenizer, past_key_values, draft_past_key_values, 
         record.update({
             "query": query,
             "response": output_str,
+            "testcase": testcase_str,
+            "status": status,
             "peak_memory": torch.cuda.max_memory_reserved(generator.device) / (1024 ** 3)
         })
 
